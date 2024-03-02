@@ -1,5 +1,7 @@
 import os
 import re
+import pandas as pd
+from collections import Counter
 from tiktoken import get_encoding
 from openai import OpenAI
 
@@ -101,10 +103,55 @@ def count_tokens(text : str, encoding :str = "cl100k_base") -> int:
     encoding = get_encoding(encoding)
     return len(encoding.encode(text))
 
-def get_completion(client : OpenAI, messages : dict[str,str], prompt : str, model : str = "gpt-3.5-turbo-0125", temp = 0):
-    return = client.chat.completions.create(model=model,
-                                            messages=messages,
-                                            temperature=temp,)
+def get_completion(client : OpenAI, messages : dict[str,str], model : str = "gpt-3.5-turbo-0125", temp = 0):
+    """
+    # Available Models: https://platform.openai.com/docs/models/overview
+    
+    # Model Response: GPT models return a status code with one of four values, documented in the Response format section of the Chat documentation.
+        
+        stop: API returned complete model output
+        length: Incomplete model output due to max_tokens parameter or token limit
+        content_filter: Omitted content due to a flag from our content filters
+        null: API response still in progress or incompleteplete
+            
+        -> response.choices[0].finish_reason
+    """
+    response = client.chat.completions.create(model=model, messages=messages, temperature=temp)
+    return response
+
+def create_messages_context_gpt(system : str, prompt : str, user_assistant : list[tuple[str,str]] = None):
+    """
+    # Message Types
+        - system: messages describe the behavior of the AI assistant. A useful system message for data science use cases is "You are a helpful assistant who
+          understands data science."
+        - user: messages describe what you want the AI assistant to say. We'll cover examples of user messages throughout this tutorial
+        - assistant messages describe previous responses in the conversation. We'll cover how to have an interactive conversation in later tasks
+
+    The first message should be a system message. Additional messages should alternate between the user and the assistant.
+    """
+
+    messages = [{"role": "system", "content": system},]
+
+    if user_assistant:
+        for example in user_assistant:
+            user, assistant = example
+            messages.append({"role": "user", "content": user})
+            messages.append({"role": "assistant", "content": assistant})
+    messages.append({"role": "user", "content": prompt})
+
+    return messages
+
+def det_commonly_used_terms(terms : pd.Series, min_count : int = 10) -> dict[str,int]:
+    res = []
+    for items in terms.dropna().values:
+        for item in items.split("|"):
+            if item == "":
+                continue
+            res.append(item)
+    return {k:v for k,v in Counter(res).items() if v >= min_count}
+
+def concat_terms(terms : dict[str,int], delimiter = " - ") -> str:
+    return delimiter.join(list(terms.keys()))
 
 
 
