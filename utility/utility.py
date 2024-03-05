@@ -4,6 +4,12 @@ import pandas as pd
 from collections import Counter
 from tiktoken import get_encoding
 from openai import OpenAI
+from datetime import datetime
+from tenacity import (
+    retry, 
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 def replace_consecutive_newlines(text) -> str:
     # Use regular expression to replace consecutive newlines with a single newline
@@ -103,6 +109,7 @@ def count_tokens(text : str, encoding :str = "cl100k_base") -> int:
     encoding = get_encoding(encoding)
     return len(encoding.encode(text))
 
+@retry(wait=wait_random_exponential(min=1, max=60))
 def get_completion(client : OpenAI, messages : dict[str,str], model : str = "gpt-3.5-turbo-0125", temp = 0):
     """
     # Available Models: https://platform.openai.com/docs/models/overview
@@ -116,6 +123,7 @@ def get_completion(client : OpenAI, messages : dict[str,str], model : str = "gpt
             
         -> response.choices[0].finish_reason
     """
+    print(datetime.now())
     response = client.chat.completions.create(model=model, messages=messages, temperature=temp)
     return response
 
@@ -141,17 +149,36 @@ def create_messages_context_gpt(system : str, prompt : str, user_assistant : lis
 
     return messages
 
-def det_commonly_used_terms(terms : pd.Series, min_count : int = 10) -> dict[str,int]:
+def prompt_gpt(client : OpenAI, 
+               system : str, 
+               prompt : str, 
+               user_assistant : list[tuple[str,str]] = None, 
+               model : str = "gpt-3.5-turbo-0125", 
+               temp = 0):
+
+    messages = create_messages_context_gpt(system, prompt, user_assistant)
+    output = get_completion(client, messages, model, temp)
+    return output
+
+
+def det_commonly_used_terms(terms : pd.Series, min_ratio : float = .40) -> dict[str,int]:
     res = []
     for items in terms.dropna().values:
         for item in items.split("|"):
             if item == "":
                 continue
             res.append(item)
-    return {k:v for k,v in Counter(res).items() if v >= min_count}
+    return {k:v for k,v in Counter(res).items() if v >= terms.size * min_ratio}
+
 
 def concat_terms(terms : dict[str,int], delimiter = " - ") -> str:
     return delimiter.join(list(terms.keys()))
+
+
+def calc_price_gpt(files, avg_tok_size, num_segments, price, tokens_per_price):
+    price = files * num_segments * avg_tok_size / tokens_per_price * price
+    return price
+
 
 
 
