@@ -1,6 +1,9 @@
 import os
 import re
+import json
+from math import ceil
 import pandas as pd
+import numpy as np
 from collections import Counter
 from tiktoken import get_encoding
 from openai import OpenAI
@@ -160,7 +163,6 @@ def prompt_gpt(client : OpenAI,
     output = get_completion(client, messages, model, temp)
     return output
 
-
 def det_commonly_used_terms(terms : pd.Series, min_ratio : float = .40) -> dict[str,int]:
     res = []
     for items in terms.dropna().values:
@@ -175,11 +177,111 @@ def concat_terms(terms : dict[str,int], delimiter = " - ") -> str:
     return delimiter.join(list(terms.keys()))
 
 
-def calc_price_gpt(files, avg_tok_size, num_segments, price, tokens_per_price):
-    price = files * num_segments * avg_tok_size / tokens_per_price * price
-    return price
+def calc_price_gpt(num_files, avg_tok_size, num_segments, price, tokens_per_price):
+    price = num_files * num_segments * avg_tok_size / tokens_per_price * price
+    return {"$ (excl. VAT)":price}
+
+def calc_compute_time(num_files, avg_tok_size, num_segments, tokens_per_minute):
+    min_raw = num_files * avg_tok_size * num_segments / tokens_per_minute
+    days = min_raw // (60 * 24)
+    hours = (min_raw - days * (60 * 24)) // 60
+    min = min_raw % 60
+    
+    return {'days':days, 'hours':hours, 'min':min, 'raw min':min_raw}
+
+def get_user_assistant_context_format1(df, id_col, source_col, paragraph_col, sentence_col, standard_col):
+    user_assistant = []
+    
+    for id in df[id_col].unique():
+        user_content = ""
+        assistant_content = {}
+        row = df[df[id_col] == id]
+
+        for source in row[source_col].unique():
+            user_content += str(row[row[source_col] == source][paragraph_col].values[0]) + " ... "
+            assistant_content[source] = {"sentence": str(row[row[source_col] == source][sentence_col].values[0]),
+                                         "standard": str(row[row[source_col] == source][standard_col].values[0])}
+
+        user_assistant.append((user_content, json.dumps(assistant_content)))
+        
+    return user_assistant
+
+def get_user_assistant_context_format2(df, id_col, source_col, paragraph_col, sentence_col, standard_col):
+    user_assistant = []
+
+    for id in df[id_col].unique():
+        user_content = ""
+        assistant_content = {}
+        row = df[df[id_col] == id]
+
+        for source in row[source_col].unique():
+            user_content += str(row[row[source_col] == source][paragraph_col].values[0]) + " ... "
+            assistant_content[source] = {"standard": str(row[row[source_col] == source][standard_col].values[0])}
+
+        user_assistant.append((user_content, json.dumps(assistant_content)))
+
+    return user_assistant
+
+def get_examples_prompt(base, df, id_col, source_col, paragraph_col, sentence_col, standard_col):
+
+    examples = base
+
+    for i, id in enumerate(df[id_col].unique()):
+        examples += "\nExample " + str(i) + ":\n"
+        paragraph = ""
+        sentence_std = {}
+        row = df[df[id_col] == id]
+
+        for source in row[source_col].unique():
+            paragraph += str(row[row[source_col] == source][paragraph_col].values[0]) + " ... "
+            sentence_std[source] = {"sentence": str(row[row[source_col] == source][sentence_col].values[0]),
+                                    "standard": str(row[row[source_col] == source][standard_col].values[0])}
+
+        examples += paragraph + "\nAnswer " + str(i) + ":\n"
+        examples += json.dumps(sentence_std) + '\n'
+
+    return examples
+
+def segment_text_column(df, id_col, fin_stmt_col, max_tokens, overlay, encoding :str = "cl100k_base"):
+
+    result_df = pd.DataFrame()
+    df = df.copy()
+    
+    for index in df.index:
+        row = df.loc[index].copy()
+        df.drop(index, inplace = True)
+
+        segments = segment_text(row.prompt, max_tokens, overlay, encoding)
+        for i, s in enumerate(segments):
+            i_row = row.copy()
+            i_row["segment"] = str(i)
+            i_row["prompt"] = s
+            i_row = pd.DataFrame([i_row])
+            result_df = pd.concat([result_df, i_row], ignore_index=True)
+
+    result_df["num_tokens"] = result_df["prompt"].apply(count_tokens) 
+
+    return result_df
+
+def segment_text(text, max_tokens, overlay, encoding :str = "cl100k_base"):
+    tokens_ = 0
+    indexes = []
+    text_token_len = count_tokens(text)
+    while tokens_ + max_tokens <= text_token_len:
+        indexes.append((tokens_, max_tokens+tokens_))
+        tokens_ += max_tokens - overlay
+    indexes.append((tokens_, text_token_len))
+
+    encoder = get_encoding(encoding)
+    encoded_text = encoder.encode(text)
+        
+    segments = [encoder.decode(encoded_text[index[0]:index[1]]) for index in indexes]    
+
+    return segments
 
 
+    
+    
 
 
 

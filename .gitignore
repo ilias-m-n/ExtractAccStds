@@ -1,2 +1,5 @@
 /.env
 /data/*
+/utility/.ipynb_checkpoints/
+/utility/__pycache__/
+/.ipynb_checkpoints/
