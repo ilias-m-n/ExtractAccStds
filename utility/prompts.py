@@ -50,12 +50,12 @@ and separated by commas, in the vicinity of the information to be extracted: <no
 answer_format1 = """
 Answer in the following format:
 {
-'Notes' : {
-    'sentence' : sentence from which you extracted the standard contained in the notes section,
-    'standard' : accounting standard you found in the notes section},
-'Auditor' : {
-    'sentence' : sentence from which you extracted the standard contained in the auditor section,
-    'standard' : accounting standard you found in the auditor section}
+"notes" : {
+    "sentence" : "sentence from which you extracted the standard contained in the notes section",
+    "term" : "accounting standard you found in the notes section"},
+'audit' : {
+    "sentence" : "sentence from which you extracted the standard contained in the auditor section",
+    "term" : "accounting standard you found in the auditor section"}
 }
 """
 
@@ -63,8 +63,8 @@ Answer in the following format:
 answer_format2 = """
 Answer in the following format:
 {
-'Notes' : {'standard': accounting standard you found in the notes section},
-'Auditor': {'standard': accounting standard extracted from the auditor section}
+'notes' : {'term': accounting standard you found in the notes section},
+'audit': {'term': accounting standard extracted from the auditor section}
 }
 """
 

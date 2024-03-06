@@ -200,7 +200,7 @@ def get_user_assistant_context_format1(df, id_col, source_col, paragraph_col, se
         for source in row[source_col].unique():
             user_content += str(row[row[source_col] == source][paragraph_col].values[0]) + " ... "
             assistant_content[source] = {"sentence": str(row[row[source_col] == source][sentence_col].values[0]),
-                                         "standard": str(row[row[source_col] == source][standard_col].values[0])}
+                                         "term": str(row[row[source_col] == source][standard_col].values[0])}
 
         user_assistant.append((user_content, json.dumps(assistant_content)))
         
@@ -216,7 +216,7 @@ def get_user_assistant_context_format2(df, id_col, source_col, paragraph_col, se
 
         for source in row[source_col].unique():
             user_content += str(row[row[source_col] == source][paragraph_col].values[0]) + " ... "
-            assistant_content[source] = {"standard": str(row[row[source_col] == source][standard_col].values[0])}
+            assistant_content[source] = {"term": str(row[row[source_col] == source][standard_col].values[0])}
 
         user_assistant.append((user_content, json.dumps(assistant_content)))
 
@@ -235,7 +235,7 @@ def get_examples_prompt(base, df, id_col, source_col, paragraph_col, sentence_co
         for source in row[source_col].unique():
             paragraph += str(row[row[source_col] == source][paragraph_col].values[0]) + " ... "
             sentence_std[source] = {"sentence": str(row[row[source_col] == source][sentence_col].values[0]),
-                                    "standard": str(row[row[source_col] == source][standard_col].values[0])}
+                                    "term": str(row[row[source_col] == source][standard_col].values[0])}
 
         examples += paragraph + "\nAnswer " + str(i) + ":\n"
         examples += json.dumps(sentence_std) + '\n'
