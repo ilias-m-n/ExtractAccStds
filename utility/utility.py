@@ -1,6 +1,6 @@
 import os
-import re
 import json
+import re
 from math import ceil
 import pandas as pd
 import numpy as np
@@ -13,84 +13,28 @@ from tenacity import (
     stop_after_attempt,
     wait_random_exponential,
 )
+from . import text_cleaning as tc
 
-def replace_consecutive_newlines(text) -> str:
-    # Use regular expression to replace consecutive newlines with a single newline
-    modified_text = re.sub(r'\n\s*\n*', ' ', text)
-    return modified_text
 
-def remove_special_characters(text) -> str:
-    # Use replace to remove \x0c
-    modified_text = re.sub(r'[\x0c\xad]', ' ', text)
-    return modified_text
+# Estimates for pricing and compute time
+def calc_price_gpt(num_files, avg_tok_size, num_segments, price, tokens_per_price = 1000):
+    price = num_files * num_segments * avg_tok_size / tokens_per_price * price
+    return {"$ (excl. VAT)":price}
 
-def remove_links(text) -> str:
-    # Use regular expression to remove links starting with www.
-    # Use regular expression to remove links
-    modified_text = re.sub(r'http[s]?://[^\s]+|www\.[^\s]+', ' ', text)
-    return modified_text
+def calc_compute_time(num_files, avg_tok_size, num_segments, tokens_per_minute):
+    min_raw = num_files * avg_tok_size * num_segments / tokens_per_minute
+    days = min_raw // (60 * 24)
+    hours = (min_raw - days * (60 * 24)) // 60
+    min = min_raw % 60
+    
+    return {'days':days, 'hours':hours, 'min':min, 'raw min':min_raw}
 
-def remove_dates(text) -> str:
-    # Use regular expression to remove dates like "31 March 2006"
-    modified_text = re.sub(r'\b\d{1,2} [a-zA-Z]+ \d{4}\b', ' ', text)
-    return modified_text
+# Estimate for token number
+def count_tokens(text : str, encoding :str = "cl100k_base") -> int:
+    encoding = get_encoding(encoding)
+    return len(encoding.encode(text))
 
-def remove_currency(text) -> str:
-    modified_text = re.sub(r'[$€£¥₹₽₩₺₴₭₪₨]', " ", text)
-    return modified_text
-
-def remove_decimal_numbers(text) -> str:
-    # Use regular expression to remove decimal point numbers, sometimes followed by "p" for percent
-    modified_text = re.sub(r'\b[(]?(\d{1,3},)*\d{0,3}.\d+[pkKmMbB)]?\b', ' ', text)
-    return modified_text
-
-def remove_parenthesis(text) -> str:
-    modified_text = re.sub(r'\(\s*\d*[a-zA-Z]?\+?\s*\)', ' ', text)
-    return modified_text
-
-def remove_percent(text) -> str:
-    # Use regular expression to remove "per cent" text and percent symbols
-    modified_text = re.sub(r'\b(?:per cent|%)\b', ' ', text)
-    return modified_text
-
-def remove_lonely_symbols(text) -> str:
-    modified_text = re.sub(r"\s{1,}(\(?\d{0,2}%[),]?|\'|N/A|\(|p|per cent|\*|·|million|,|\.|-|:)\s{1,}", ' ', text)
-    return modified_text
-
-def remove_extra_spaces(text) -> str:
-    # Use regular expression to remove extra spaces
-    modified_text = re.sub(r'\s+', ' ', text)
-    return modified_text.strip()
-
-def remove_extra_points(text) -> str:
-    modified_text = re.sub(r'\.{2,}', "\.", text)
-    return modified_text
-
-def remove_double_backslashes(text):
-    # Use regular expression to remove double backslashes
-    modified_text = re.sub(r'[\\]', '', text)
-    return modified_text
-
-def remove_emails(text):
-    # Use regular expression to remove email addresses
-    modified_text = re.sub(r'\S+@\S+', '', text)
-    return modified_text
-
-def clean_text(text) -> str:
-    text = remove_special_characters(text)
-    text = replace_consecutive_newlines(text)
-    text = remove_links(text)
-    text = remove_dates(text)
-    text = remove_currency(text)
-    text = remove_decimal_numbers(text)
-    text = remove_parenthesis(text)
-    text = remove_lonely_symbols(text)
-    text = remove_extra_spaces(text)
-    text = remove_extra_points(text)
-    text = remove_double_backslashes(text)
-    text = remove_emails(text)
-    return text
-
+# Read text and check for empty files
 def parse_txt(file_path : str) -> str:
     res = None
     # first check whether file exists
@@ -108,11 +52,78 @@ def parse_txt(file_path : str) -> str:
                 return None
     return res
 
-def count_tokens(text : str, encoding :str = "cl100k_base") -> int:
-    encoding = get_encoding(encoding)
-    return len(encoding.encode(text))
+# Prep Inputs
+def prep_inputs(raw_df, filepath_col, id_col, coi, base_token_length, flag_segment, max_token_num, overlay, encoding = "cl100k_base"):
 
-@retry(wait=wait_random_exponential(min=1, max=60))
+    input_df = raw_df[coi].copy().drop_duplicates()
+    input_df['prompt'] = input_df[filepath_col].apply(parse_txt).apply(tc.clean_text)
+    input_df['prompt_tokens'] = input_df['prompt'].apply(count_tokens)
+    input_df['total_tokens'] = input_df['prompt_tokens'] + base_token_length
+
+    if flag_segment:
+        input_df = segment_text_column(input_df, id_col, max_token_num, overlay, base_token_length, encoding)
+
+    return input_df
+
+
+# Create overlaying segments for text
+def segment_text_column(raw_df, id_col, max_tokens, overlay, context_num_tokens, encoding):
+
+    result_df = pd.DataFrame()
+    raw_df = raw_df.copy()
+    
+    for index in raw_df.index:
+        row = raw_df.loc[index].copy()
+        prompt = raw_df.loc[index]['prompt']
+        raw_df.drop(index, inplace = True)
+
+        segments = segment_text(prompt, max_tokens-context_num_tokens, overlay, encoding)
+        
+        for i, s in enumerate(segments):
+            i_row = row.copy()
+            i_row["segment"] = str(i)
+            i_row["prompt"] = s
+            i_row = pd.DataFrame([i_row])
+            result_df = pd.concat([result_df, i_row], ignore_index=True)
+
+    result_df["prompt_tokens"] = result_df["prompt"].apply(count_tokens)
+    result_df["total_tokens"] = result_df["prompt_tokens"] + context_num_tokens
+
+    return result_df
+
+def segment_text(text, max_tokens, overlay, encoding :str = "cl100k_base"):
+    tokens_ = 0
+    indexes = []
+    text_token_len = count_tokens(text)
+    while tokens_ + max_tokens <= text_token_len:
+        indexes.append((tokens_, max_tokens+tokens_))
+        tokens_ += max_tokens - overlay
+    indexes.append((tokens_, text_token_len))
+
+    encoder = get_encoding(encoding)
+    encoded_text = encoder.encode(text)
+        
+    segments = [encoder.decode(encoded_text[index[0]:index[1]]) for index in indexes]    
+
+    return segments
+
+# Commonly used terms section
+def det_commonly_used_terms(terms : pd.Series, delimiter = "|", min_ratio : float = .40) -> dict[str,int]:
+    res = []
+    for items in terms.dropna().values:
+        for item in items.split(delimiter):
+            if item == "":
+                continue
+            res.append(item)
+    return {k:v for k,v in Counter(res).items() if v >= terms.size * min_ratio}
+
+
+def concat_terms(terms : dict[str,int], delimiter = " - ") -> str:
+    return delimiter.join(list(terms.keys()))
+
+
+#Call API
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
 def get_completion(client : OpenAI, messages : dict[str,str], model : str = "gpt-3.5-turbo-0125", temp = 0):
     """
     # Available Models: https://platform.openai.com/docs/models/overview
@@ -126,9 +137,9 @@ def get_completion(client : OpenAI, messages : dict[str,str], model : str = "gpt
             
         -> response.choices[0].finish_reason
     """
-    print(datetime.now())
     response = client.chat.completions.create(model=model, messages=messages, temperature=temp)
     return response
+
 
 def create_messages_context_gpt(system : str, prompt : str, user_assistant : list[tuple[str,str]] = None):
     """
@@ -163,33 +174,28 @@ def prompt_gpt(client : OpenAI,
     output = get_completion(client, messages, model, temp)
     return output
 
-def det_commonly_used_terms(terms : pd.Series, min_ratio : float = .40) -> dict[str,int]:
-    res = []
-    for items in terms.dropna().values:
-        for item in items.split("|"):
-            if item == "":
-                continue
-            res.append(item)
-    return {k:v for k,v in Counter(res).items() if v >= terms.size * min_ratio}
 
+# FewShot Examples
+def prep_fs_examples(df, id_col, source_col, paragraph_col, sentence_col, standard_col, incl_sentence, flag_UA, flag_segmented, base_prompt=""):
+    user_assistant = None
+    prompt_examples = ""
 
-def concat_terms(terms : dict[str,int], delimiter = " - ") -> str:
-    return delimiter.join(list(terms.keys()))
+    if flag_UA:
+        if not flag_segmented:
+            user_assistant = get_user_assistant_context(df, id_col, source_col, paragraph_col, sentence_col, standard_col, incl_sentence)
+        else:
+            user_assistant = get_user_assistant_context_segmented(df, id_col, source_col, paragraph_col, sentence_col, standard_col, incl_sentence)
+    else:
+        if not flag_segmented:
+            prompt_examples = get_examples_prompt(df, id_col, source_col, paragraph_col, sentence_col, standard_col, incl_sentence, base_prompt)
+        else:
+            prompt_examples = get_examples_prompt_segmented(df, id_col, source_col, paragraph_col, sentence_col, standard_col, incl_sentence, base_prompt)
 
-
-def calc_price_gpt(num_files, avg_tok_size, num_segments, price, tokens_per_price):
-    price = num_files * num_segments * avg_tok_size / tokens_per_price * price
-    return {"$ (excl. VAT)":price}
-
-def calc_compute_time(num_files, avg_tok_size, num_segments, tokens_per_minute):
-    min_raw = num_files * avg_tok_size * num_segments / tokens_per_minute
-    days = min_raw // (60 * 24)
-    hours = (min_raw - days * (60 * 24)) // 60
-    min = min_raw % 60
+    return user_assistant, prompt_examples
     
-    return {'days':days, 'hours':hours, 'min':min, 'raw min':min_raw}
 
-def get_user_assistant_context_format1(df, id_col, source_col, paragraph_col, sentence_col, standard_col):
+
+def get_user_assistant_context(df, id_col, source_col, paragraph_col, sentence_col, standard_col, incl_sentence):
     user_assistant = []
     
     for id in df[id_col].unique():
@@ -199,30 +205,39 @@ def get_user_assistant_context_format1(df, id_col, source_col, paragraph_col, se
 
         for source in row[source_col].unique():
             user_content += str(row[row[source_col] == source][paragraph_col].values[0]) + " ... "
-            assistant_content[source] = {"sentence": str(row[row[source_col] == source][sentence_col].values[0]),
-                                         "term": str(row[row[source_col] == source][standard_col].values[0])}
+            if incl_sentence:
+                assistant_content[source] = {"sentence": str(row[row[source_col] == source][sentence_col].values[0]),
+                                             "term": str(row[row[source_col] == source][standard_col].values[0])}
+            else:
+                assistant_content[source] = {"term": str(row[row[source_col] == source][standard_col].values[0])}
 
         user_assistant.append((user_content, json.dumps(assistant_content)))
         
     return user_assistant
 
-def get_user_assistant_context_format2(df, id_col, source_col, paragraph_col, sentence_col, standard_col):
+def get_user_assistant_context_segmented(df, id_col, source_col, paragraph_col, sentence_col, standard_col, incl_sentence):
     user_assistant = []
 
-    for id in df[id_col].unique():
-        user_content = ""
-        assistant_content = {}
-        row = df[df[id_col] == id]
+    for i, row in enumerate(df.index):
+        paragraph = df.loc[row, paragraph_col]
+        source = df.loc[row, source_col]
+        sentence_std = df.loc[row, sentence_col]
+        standard_std = df.loc[row, standard_col]
+        
+        assistant_content = {} 
 
-        for source in row[source_col].unique():
-            user_content += str(row[row[source_col] == source][paragraph_col].values[0]) + " ... "
-            assistant_content[source] = {"term": str(row[row[source_col] == source][standard_col].values[0])}
+        if incl_sentence:
+            assistant_content[source] = {"sentence": sentence_std,
+                                         "term": standard_std}
+        else:
+            assistant_content[source] = {"term": standard_std}
 
-        user_assistant.append((user_content, json.dumps(assistant_content)))
+        user_assistant.append((paragraph, json.dumps(assistant_content)))
 
     return user_assistant
 
-def get_examples_prompt(base, df, id_col, source_col, paragraph_col, sentence_col, standard_col):
+
+def get_examples_prompt(df, id_col, source_col, paragraph_col, sentence_col, standard_col, incl_sentence, base):
 
     examples = base
 
@@ -232,55 +247,48 @@ def get_examples_prompt(base, df, id_col, source_col, paragraph_col, sentence_co
         sentence_std = {}
         row = df[df[id_col] == id]
 
-        for source in row[source_col].unique():
+        for source in row[source_col].unique():            
             paragraph += str(row[row[source_col] == source][paragraph_col].values[0]) + " ... "
-            sentence_std[source] = {"sentence": str(row[row[source_col] == source][sentence_col].values[0]),
-                                    "term": str(row[row[source_col] == source][standard_col].values[0])}
-
+            if incl_sentence:
+                sentence_std[source] = {"sentence": str(row[row[source_col] == source][sentence_col].values[0]),
+                                        "term": str(row[row[source_col] == source][standard_col].values[0])}
+            else:
+                sentence_std[source] = {"term": str(row[row[source_col] == source][standard_col].values[0])}
+        
         examples += paragraph + "\nAnswer " + str(i) + ":\n"
         examples += json.dumps(sentence_std) + '\n'
 
     return examples
 
-def segment_text_column(df, id_col, fin_stmt_col, max_tokens, overlay, encoding :str = "cl100k_base"):
+def get_examples_prompt_segmented(df, id_col, source_col, paragraph_col, sentence_col, standard_col, incl_sentence, base):
 
-    result_df = pd.DataFrame()
-    df = df.copy()
-    
-    for index in df.index:
-        row = df.loc[index].copy()
-        df.drop(index, inplace = True)
+    examples = base
 
-        segments = segment_text(row.prompt, max_tokens, overlay, encoding)
-        for i, s in enumerate(segments):
-            i_row = row.copy()
-            i_row["segment"] = str(i)
-            i_row["prompt"] = s
-            i_row = pd.DataFrame([i_row])
-            result_df = pd.concat([result_df, i_row], ignore_index=True)
-
-    result_df["num_tokens"] = result_df["prompt"].apply(count_tokens) 
-
-    return result_df
-
-def segment_text(text, max_tokens, overlay, encoding :str = "cl100k_base"):
-    tokens_ = 0
-    indexes = []
-    text_token_len = count_tokens(text)
-    while tokens_ + max_tokens <= text_token_len:
-        indexes.append((tokens_, max_tokens+tokens_))
-        tokens_ += max_tokens - overlay
-    indexes.append((tokens_, text_token_len))
-
-    encoder = get_encoding(encoding)
-    encoded_text = encoder.encode(text)
+    for i, row in enumerate(df.index):
         
-    segments = [encoder.decode(encoded_text[index[0]:index[1]]) for index in indexes]    
+        examples += "\nExample " + str(i) + ":\n"
+        
+        paragraph = df.loc[row, paragraph_col]
 
-    return segments
+        source = df.loc[row, source_col]
+        sentence_std = df.loc[row, sentence_col]
+        standard_std = df.loc[row, standard_col]
+
+        if incl_sentence:
+            sentence_std = {source: {"sentence": sentence_std,
+                                     "term": standard_std}}
+        else:
+            sentence_std = {source: {"term": standard_std}}
+            
+        examples += paragraph + "\nAnswer " + str(i) + ":\n"
+        examples += json.dumps(sentence_std) + '\n'
+
+    return examples
 
 
-    
+
+
+'cc_iso3 filename sentence term source found_sentence found_term'
     
 
 
